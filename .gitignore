@@ -1,0 +1,12 @@
+/**/bin
+/**/target
+/dependency-reduced-pom.xml
+*~
+.metadata/
+.settings/
+.apt*/
+.project
+.classpath
+.factorypath
+.claude
+config.test.properties
