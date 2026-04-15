@@ -3,6 +3,7 @@
  */
 package net.burget.slides.imports;
 
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -35,9 +36,13 @@ public class PPTXConvertor
     
     public static void outputMedia(Presentation pres, String odir) throws IOException
     {
+        if (pres.getResources().isEmpty())
+            return;
+        File assetsDir = new File(odir, "assets");
+        assetsDir.mkdirs();
         for (Resource res : pres.getResources())
         {
-            OutputStream out = new FileOutputStream(odir + "/" + res.getName());
+            OutputStream out = new FileOutputStream(new File(assetsDir, res.getName()));
             out.write(res.getData());
             out.close();
         }

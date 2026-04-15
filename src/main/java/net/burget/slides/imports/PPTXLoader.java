@@ -237,18 +237,18 @@ public final class PPTXLoader
     private String linkPicture(XSLFPictureShape shape)
     {
         XSLFPictureData pData = shape.getPictureData();
-        return "\n![" + shape.getShapeName() + "](" + pData.getFileName() + ")\n";
+        return "\n![" + shape.getShapeName() + "](assets/" + pData.getFileName() + ")\n";
     }
-    
+
     private String linkPicture(XSLFObjectShape shape)
     {
         XSLFPictureData pData = shape.getPictureData();
-        return "\n![" + shape.getShapeName() + "](" + pData.getFileName() + ")\n";
+        return "\n![" + shape.getShapeName() + "](assets/" + pData.getFileName() + ")\n";
     }
-    
+
     private String linkPicture(Resource res)
     {
-        return "\n![" + res.getTitle() + "](" + res.getName() + ")\n";
+        return "\n![" + res.getTitle() + "](assets/" + res.getName() + ")\n";
     }
     
     private Resource createPictureResource(String title, XSLFPictureData data)
