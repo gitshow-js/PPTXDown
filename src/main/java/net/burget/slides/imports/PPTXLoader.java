@@ -1,16 +1,26 @@
 package net.burget.slides.imports;
 
+import java.awt.Dimension;
+import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.io.PrintStream;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.batik.dom.GenericDOMImplementation;
+import org.apache.batik.svggen.DefaultExtensionHandler;
+import org.apache.batik.svggen.SVGGraphics2D;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.sl.usermodel.Placeholder;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
+import org.apache.poi.xslf.usermodel.XSLFAutoShape;
+import org.apache.poi.xslf.usermodel.XSLFConnectorShape;
 import org.apache.poi.xslf.usermodel.XSLFGroupShape;
 import org.apache.poi.xslf.usermodel.XSLFObjectShape;
 import org.apache.poi.xslf.usermodel.XSLFPictureData;
@@ -31,6 +41,7 @@ import net.burget.slides.entity.Slide;
 public final class PPTXLoader 
 {
     private static String INDENT_STRING = "\t";
+    private static final int MIN_GRAPHICAL_SHAPES = 12;
 
     private List<ResourceConvertor> resourceConvertors;
     
@@ -39,6 +50,7 @@ public final class PPTXLoader
     {
         resourceConvertors = new ArrayList<>();
         resourceConvertors.add(new EMFImageConvertor());
+        resourceConvertors.add(new WMFImageConvertor());
     }
     
     public void outputMarkdown(XMLSlideShow ppt, PrintStream out) throws IOException
@@ -54,13 +66,28 @@ public final class PPTXLoader
     {
         Presentation p = new Presentation();
         Set<String> slideClasses = new HashSet<>();
-        //convert slides
+        Dimension pageSize = ppt.getPageSize();
         Slide prev = null;
         long cnt = 1;
-        for (XSLFSlide slide : ppt.getSlides()) 
+        for (XSLFSlide slide : ppt.getSlides())
         {
             Slide newSlide = convertSlide(slide, p);
-            newSlide.setId(cnt++);
+            long slideId = cnt++;
+            newSlide.setId(slideId);
+
+            // Render slides that contain graphical shapes (connectors, auto-shapes, tables, etc.)
+            // that cannot be represented as text or extracted as picture resources.
+            if (hasGraphicalShapes(slide))
+            {
+                Resource svg = renderSlideToSVG(slide, slideId, pageSize);
+                if (svg != null)
+                {
+                    p.getResources().add(svg);
+                    newSlide.setText(newSlide.getText()
+                            + "\n![Slide " + slideId + "](assets/" + svg.getName() + ")\n");
+                }
+            }
+
             if (prev == null)
                 p.addSlide(newSlide);
             else
@@ -68,9 +95,94 @@ public final class PPTXLoader
             prev = newSlide;
             slideClasses.add(newSlide.getClassName());
         }
-        //generate style template
         p.setStyle(generateStyleTemplate(slideClasses));
         return p;
+    }
+
+    /**
+     * Returns true if the slide contains any shape that is not a text placeholder,
+     * an embedded picture, or a group — i.e. shapes that produce visual content
+     * (connectors, auto-shapes used as drawings, tables, etc.) that cannot be
+     * captured by text extraction or individual picture resource extraction.
+     */
+    private boolean hasGraphicalShapes(XSLFSlide slide)
+    {
+        return cointGraphicalShapes(slide) >= MIN_GRAPHICAL_SHAPES;
+    }
+    
+    private int cointGraphicalShapes(XSLFSlide slide)
+    {
+        int count = 0;
+        for (XSLFShape shape : slide)
+        {
+            if (isGraphical(shape))
+                count++;
+        }
+        System.err.println(count + " graphical shapes");
+        return count;
+    }
+
+    private boolean isGraphical(XSLFShape shape)
+    {
+        if (shape instanceof XSLFGroupShape)
+        {
+            for (XSLFShape child : ((XSLFGroupShape) shape).getShapes())
+            {
+                if (isGraphical(child))
+                    return true;
+            }
+            return false;
+        }
+        // Pictures and OLE objects are extracted individually; no need to render the slide for them.
+        if (shape instanceof XSLFPictureShape) return false;
+        if (shape instanceof XSLFObjectShape) return false;
+        // IMPORTANT: XSLFAutoShape extends XSLFTextShape, so this check must come first.
+        // Non-placeholder shapes (text boxes, rectangles, arrows, etc.) carry visual styling
+        // (fills, geometry, borders) that can only be captured by rendering the slide.
+        if (shape instanceof XSLFAutoShape) return true;
+        // Connector lines/arrows between shapes.
+        if (shape instanceof XSLFConnectorShape) return true;
+        // Placeholder text shapes (title, body) are handled as text; not graphical.
+        if (shape instanceof XSLFTextShape) return false;
+        // Any other unrecognised shape type.
+        return true;
+    }
+
+    /**
+     * Renders a full slide to SVG using POI's drawing support and Batik's SVGGraphics2D.
+     */
+    private Resource renderSlideToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
+    {
+        System.setProperty("java.awt.headless", "true");
+        try {
+            var domImpl = GenericDOMImplementation.getDOMImplementation();
+            var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
+            // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
+            // textAsShapes=true avoids font/headless rendering issues.
+            SVGGraphics2D svgGenerator = new SVGGraphics2D(document,
+                    new JDKBase64ImageHandler(),
+                    new DefaultExtensionHandler(),
+                    true);
+            svgGenerator.setSVGCanvasSize(pageSize);
+
+            slide.draw(svgGenerator);
+
+            ByteArrayOutputStream ostream = new ByteArrayOutputStream();
+            try (Writer writer = new OutputStreamWriter(ostream, StandardCharsets.UTF_8)) {
+                svgGenerator.stream(writer, true);
+            }
+
+            Resource res = new Resource();
+            res.setMimeType("image/svg+xml");
+            res.setTitle("Slide " + slideNum);
+            res.setName("slide_" + slideNum + ".svg");
+            res.setData(ostream.toByteArray());
+            res.setSize(res.getData().length);
+            return res;
+        } catch (Exception e) {
+            System.err.println("Slide " + slideNum + " rendering failed: " + e.getMessage());
+            return null;
+        }
     }
     
     private Slide convertSlide(XSLFSlide slide, Presentation pres)

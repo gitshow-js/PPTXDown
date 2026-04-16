@@ -23,19 +23,30 @@
             <version>5.3.0</version>
         </dependency>
         <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-simple</artifactId>
-            <version>2.0.16</version>
-        </dependency>
-        <dependency>
             <groupId>org.freehep</groupId>
             <artifactId>freehep-graphicsio-emf</artifactId>
             <version>2.4</version>
         </dependency>
         <dependency>
-            <groupId>org.freehep</groupId>
-            <artifactId>freehep-graphicsio-svg</artifactId>
-            <version>2.4</version>
+            <groupId>org.apache.xmlgraphics</groupId>
+            <artifactId>batik-svggen</artifactId>
+            <version>1.17</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.xmlgraphics</groupId>
+            <artifactId>batik-dom</artifactId>
+            <version>1.17</version>
+			<exclusions>
+				<exclusion>
+					<groupId>xml-apis</groupId>
+					<artifactId>xml-apis</artifactId>
+				</exclusion>
+			</exclusions>            
+        </dependency>
+        <dependency>
+            <groupId>net.arnx</groupId>
+            <artifactId>wmf2svg</artifactId>
+            <version>0.9.8</version>
         </dependency>
     </dependencies>
 
