@@ -1,6 +1,8 @@
 package net.burget.slides.imports;
 
 import java.awt.Dimension;
+import java.awt.geom.AffineTransform;
+import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -79,7 +81,7 @@ public final class PPTXLoader
             // that cannot be represented as text or extracted as picture resources.
             if (hasGraphicalShapes(slide))
             {
-                Resource svg = renderSlideToSVG(slide, slideId, pageSize);
+                Resource svg = renderGraphicalShapesToSVG(slide, slideId, pageSize);
                 if (svg != null)
                 {
                     p.getResources().add(svg);
@@ -107,10 +109,10 @@ public final class PPTXLoader
      */
     private boolean hasGraphicalShapes(XSLFSlide slide)
     {
-        return cointGraphicalShapes(slide) >= MIN_GRAPHICAL_SHAPES;
+        return countGraphicalShapes(slide) >= MIN_GRAPHICAL_SHAPES;
     }
     
-    private int cointGraphicalShapes(XSLFSlide slide)
+    private int countGraphicalShapes(XSLFSlide slide)
     {
         int count = 0;
         for (XSLFShape shape : slide)
@@ -137,9 +139,14 @@ public final class PPTXLoader
         if (shape instanceof XSLFPictureShape) return false;
         if (shape instanceof XSLFObjectShape) return false;
         // IMPORTANT: XSLFAutoShape extends XSLFTextShape, so this check must come first.
-        // Non-placeholder shapes (text boxes, rectangles, arrows, etc.) carry visual styling
-        // (fills, geometry, borders) that can only be captured by rendering the slide.
-        if (shape instanceof XSLFAutoShape) return true;
+        // However, placeholder body/title shapes can also be XSLFAutoShape instances in some
+        // PPTX files. Those are already captured as markdown text; exclude them from SVG.
+        // Only non-placeholder auto-shapes (drawn shapes, text boxes used as diagram labels,
+        // arrows, etc.) carry visual styling that requires SVG rendering.
+        if (shape instanceof XSLFAutoShape) {
+            Placeholder ph = ((XSLFTextShape) shape).getPlaceholderDetails().getPlaceholder();
+            return ph == null;
+        }
         // Connector lines/arrows between shapes.
         if (shape instanceof XSLFConnectorShape) return true;
         // Placeholder text shapes (title, body) are handled as text; not graphical.
@@ -149,12 +156,32 @@ public final class PPTXLoader
     }
 
     /**
-     * Renders a full slide to SVG using POI's drawing support and Batik's SVGGraphics2D.
+     * Renders only the graphical shapes of a slide (auto-shapes, connectors, groups containing
+     * such shapes) to SVG using POI's drawing support and Batik's SVGGraphics2D. Title and body
+     * placeholder text shapes are excluded — they are already captured as markdown text.
+     * Shapes are drawn at their natural slide coordinates; the SVG is cropped to their bounding
+     * box via the viewBox attribute so that the title / body area is not included in the image.
      */
-    private Resource renderSlideToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
+    private Resource renderGraphicalShapesToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
     {
         System.setProperty("java.awt.headless", "true");
         try {
+            // Collect graphical shapes and compute their bounding box.
+            List<XSLFShape> graphicalShapes = new ArrayList<>();
+            Rectangle2D bounds = null;
+            for (XSLFShape shape : slide)
+            {
+                if (isGraphical(shape))
+                {
+                    graphicalShapes.add(shape);
+                    Rectangle2D anchor = shape.getAnchor();
+                    bounds = (bounds == null) ? anchor : bounds.createUnion(anchor);
+                }
+            }
+
+            if (graphicalShapes.isEmpty())
+                return null;
+
             var domImpl = GenericDOMImplementation.getDOMImplementation();
             var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
             // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
@@ -163,13 +190,36 @@ public final class PPTXLoader
                     new JDKBase64ImageHandler(),
                     new DefaultExtensionHandler(),
                     true);
+            // Use the full slide canvas so shapes are drawn at their natural slide coordinates.
+            // Rotation centres are therefore computed correctly (no pre-translate to corrupt them).
             svgGenerator.setSVGCanvasSize(pageSize);
 
-            slide.draw(svgGenerator);
+            // Draw only the graphical shapes; title/body placeholder shapes are excluded.
+            // Each shape must be wrapped with explicit AffineTransform save/restore: POI's
+            // DrawFactory.drawShape() (called by shape.draw()) restores the GROUP_TRANSFORM hint
+            // but NOT the Graphics2D AffineTransform, so rotations and flips would otherwise
+            // accumulate across shapes (cf. DrawSheet.draw() which does its own save/restore).
+            for (XSLFShape shape : graphicalShapes)
+            {
+                AffineTransform savedTransform = svgGenerator.getTransform();
+                shape.draw(svgGenerator, null);
+                svgGenerator.setTransform(savedTransform);
+            }
+
+            // Crop the SVG output to the bounding box of the graphical shapes using viewBox,
+            // so the title / body-text area is not visible in the rendered image.
+            var svgRoot = svgGenerator.getRoot();
+            svgRoot.setAttributeNS(null, "viewBox",
+                    bounds.getX() + " " + bounds.getY() + " " +
+                    bounds.getWidth() + " " + bounds.getHeight());
+            svgRoot.setAttributeNS(null, "width",
+                    String.valueOf((int) Math.ceil(bounds.getWidth())));
+            svgRoot.setAttributeNS(null, "height",
+                    String.valueOf((int) Math.ceil(bounds.getHeight())));
 
             ByteArrayOutputStream ostream = new ByteArrayOutputStream();
             try (Writer writer = new OutputStreamWriter(ostream, StandardCharsets.UTF_8)) {
-                svgGenerator.stream(writer, true);
+                svgGenerator.stream(svgRoot, writer, true, false);
             }
 
             Resource res = new Resource();
