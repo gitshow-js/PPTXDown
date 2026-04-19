@@ -34,15 +34,26 @@ public class PPTXConvertor
         out.close();
     }
     
-    public static void outputMedia(Presentation pres, String odir) throws IOException
+    public static void outputMedia(Presentation pres, File odir) throws IOException
     {
         if (pres.getResources().isEmpty())
             return;
-        File assetsDir = new File(odir, "assets");
-        assetsDir.mkdirs();
         for (Resource res : pres.getResources())
         {
-            OutputStream out = new FileOutputStream(new File(assetsDir, res.getName()));
+            OutputStream out = new FileOutputStream(new File(odir, res.getName()));
+            out.write(res.getData());
+            out.close();
+        }
+    }
+
+    public static void outputSlides(Presentation pres, File odir) throws IOException
+    {
+        System.out.println("Outputting slides to " + odir);
+        if (pres.getSlides().isEmpty())
+            return;
+        for (Resource res : pres.getSlideImages())
+        {
+            OutputStream out = new FileOutputStream(new File(odir, res.getName()));
             out.write(res.getData());
             out.close();
         }
@@ -58,13 +69,22 @@ public class PPTXConvertor
         String ifile = args[0];
         String odir = args[1];
         
+        PPTXLoader loader = new PPTXLoader();
+        loader.setGenerateSlideImages(true);
+        // Directory for assets
+        File assetsDir = new File(odir, loader.getAssetsDir());
+        assetsDir.mkdirs();
+        // Directory for entire slides
+        File slidesDir = new File(odir, loader.getSlidesDir());
+        slidesDir.mkdirs();
+        
         try {
             FileInputStream is = new FileInputStream(ifile);
             try (XMLSlideShow ppt = new XMLSlideShow(is)) {
-                PPTXLoader loader = new PPTXLoader();
                 Presentation pres = loader.createPresentation(ppt);
                 outputMarkdown(pres, odir);
-                outputMedia(pres, odir);
+                outputMedia(pres, assetsDir);
+                outputSlides(pres, slidesDir);
             }
         } catch (IOException e) {
             e.printStackTrace();

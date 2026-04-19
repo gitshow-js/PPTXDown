@@ -18,6 +18,7 @@ public class Presentation implements Serializable
     private String style = "";
     private List<Slide> slides = new ArrayList<>();
     private List<Resource> resources = new ArrayList<>();
+    private List<Resource> slideImages = new ArrayList<>();
 
     public Presentation() {}
 
@@ -32,6 +33,9 @@ public class Presentation implements Serializable
 
     public List<Resource> getResources() { return resources; }
     public void setResources(List<Resource> resources) { this.resources = resources; }
+    
+    public List<Resource> getSlideImages() { return slideImages; }
+    public void setSlideImages(List<Resource> slideImages) { this.slideImages = slideImages; }
 
     public void addSlide(Slide slide)
     {

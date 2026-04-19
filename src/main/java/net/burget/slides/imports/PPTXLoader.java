@@ -4,7 +4,6 @@ import java.awt.Dimension;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Rectangle2D;
 import java.io.ByteArrayOutputStream;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
@@ -18,7 +17,6 @@ import java.util.Set;
 import org.apache.batik.dom.GenericDOMImplementation;
 import org.apache.batik.svggen.DefaultExtensionHandler;
 import org.apache.batik.svggen.SVGGraphics2D;
-import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.sl.usermodel.Placeholder;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xslf.usermodel.XSLFAutoShape;
@@ -42,9 +40,13 @@ import net.burget.slides.entity.Slide;
  */
 public final class PPTXLoader 
 {
-    private static final String INDENT_STRING = "    ";
-    private static final int MIN_GRAPHICAL_SHAPES = 12;
-    private static final boolean TEXT_AS_SHAPES = false;
+    private String assetsDir = "assets";
+    private String slidesDir = "slides";
+    
+    private String indentString = "    ";
+    private int minGraphicalShapes = 6;
+    private boolean svgTextAsShapes = false;
+    private boolean generateSlideImages = true;
 
     private List<ResourceConvertor> resourceConvertors;
     
@@ -56,6 +58,76 @@ public final class PPTXLoader
         resourceConvertors.add(new WMFImageConvertor());
     }
     
+    public String getAssetsDir()
+    {
+        return assetsDir;
+    }
+
+    public void setAssetsDir(String assetsDir)
+    {
+        this.assetsDir = assetsDir;
+    }
+
+    public String getSlidesDir()
+    {
+        return slidesDir;
+    }
+
+    public void setSlidesDir(String slidesDir)
+    {
+        this.slidesDir = slidesDir;
+    }
+
+    public String getIndentString()
+    {
+        return indentString;
+    }
+
+    public void setIndentString(String indentString)
+    {
+        this.indentString = indentString;
+    }
+
+    public int getMinGraphicalShapes()
+    {
+        return minGraphicalShapes;
+    }
+
+    public void setMinGraphicalShapes(int minGraphicalShapes)
+    {
+        this.minGraphicalShapes = minGraphicalShapes;
+    }
+
+    public boolean isSvgTextAsShapes()
+    {
+        return svgTextAsShapes;
+    }
+
+    public void setSvgTextAsShapes(boolean svgTextAsShapes)
+    {
+        this.svgTextAsShapes = svgTextAsShapes;
+    }
+
+    public boolean isGenerateSlideImages()
+    {
+        return generateSlideImages;
+    }
+
+    public void setGenerateSlideImages(boolean generateSlideImages)
+    {
+        this.generateSlideImages = generateSlideImages;
+    }
+
+    public List<ResourceConvertor> getResourceConvertors()
+    {
+        return resourceConvertors;
+    }
+
+    public void setResourceConvertors(List<ResourceConvertor> resourceConvertors)
+    {
+        this.resourceConvertors = resourceConvertors;
+    }
+
     public void outputMarkdown(XMLSlideShow ppt, PrintStream out) throws IOException
     {
         for (XSLFSlide slide : ppt.getSlides()) 
@@ -87,7 +159,16 @@ public final class PPTXLoader
                 {
                     p.getResources().add(svg);
                     newSlide.setText(newSlide.getText()
-                            + "\n![Slide " + slideId + "](assets/" + svg.getName() + ")\n");
+                            + "\n![Slide " + slideId + "](" + assetsDir + "/" + svg.getName() + ")\n");
+                }
+            }
+            
+            if (generateSlideImages)
+            {
+                Resource img = renderSlideToSVG(slide, slideId, pageSize);
+                if (img != null)
+                {
+                    p.getSlideImages().add(img);
                 }
             }
 
@@ -110,7 +191,7 @@ public final class PPTXLoader
      */
     private boolean hasGraphicalShapes(XSLFSlide slide)
     {
-        return countGraphicalShapes(slide) >= MIN_GRAPHICAL_SHAPES;
+        return countGraphicalShapes(slide) >= minGraphicalShapes;
     }
     
     private int countGraphicalShapes(XSLFSlide slide)
@@ -156,85 +237,6 @@ public final class PPTXLoader
         return true;
     }
 
-    /**
-     * Renders only the graphical shapes of a slide (auto-shapes, connectors, groups containing
-     * such shapes) to SVG using POI's drawing support and Batik's SVGGraphics2D. Title and body
-     * placeholder text shapes are excluded — they are already captured as markdown text.
-     * Shapes are drawn at their natural slide coordinates; the SVG is cropped to their bounding
-     * box via the viewBox attribute so that the title / body area is not included in the image.
-     */
-    private Resource renderGraphicalShapesToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
-    {
-        System.setProperty("java.awt.headless", "true");
-        try {
-            // Collect graphical shapes and compute their bounding box.
-            List<XSLFShape> graphicalShapes = new ArrayList<>();
-            Rectangle2D bounds = null;
-            for (XSLFShape shape : slide)
-            {
-                if (isGraphical(shape))
-                {
-                    graphicalShapes.add(shape);
-                    Rectangle2D anchor = shape.getAnchor();
-                    bounds = (bounds == null) ? anchor : bounds.createUnion(anchor);
-                }
-            }
-
-            if (graphicalShapes.isEmpty())
-                return null;
-
-            var domImpl = GenericDOMImplementation.getDOMImplementation();
-            var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
-            // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
-            SVGGraphics2D svgGenerator = new SVGGraphics2D(document,
-                    new JDKBase64ImageHandler(),
-                    new DefaultExtensionHandler(),
-                    TEXT_AS_SHAPES);
-            // Use the full slide canvas so shapes are drawn at their natural slide coordinates.
-            // Rotation centres are therefore computed correctly (no pre-translate to corrupt them).
-            svgGenerator.setSVGCanvasSize(pageSize);
-
-            // Draw only the graphical shapes; title/body placeholder shapes are excluded.
-            // Each shape must be wrapped with explicit AffineTransform save/restore: POI's
-            // DrawFactory.drawShape() (called by shape.draw()) restores the GROUP_TRANSFORM hint
-            // but NOT the Graphics2D AffineTransform, so rotations and flips would otherwise
-            // accumulate across shapes (cf. DrawSheet.draw() which does its own save/restore).
-            for (XSLFShape shape : graphicalShapes)
-            {
-                AffineTransform savedTransform = svgGenerator.getTransform();
-                shape.draw(svgGenerator, null);
-                svgGenerator.setTransform(savedTransform);
-            }
-
-            // Crop the SVG output to the bounding box of the graphical shapes using viewBox,
-            // so the title / body-text area is not visible in the rendered image.
-            var svgRoot = svgGenerator.getRoot();
-            svgRoot.setAttributeNS(null, "viewBox",
-                    bounds.getX() + " " + bounds.getY() + " " +
-                    bounds.getWidth() + " " + bounds.getHeight());
-            svgRoot.setAttributeNS(null, "width",
-                    String.valueOf((int) Math.ceil(bounds.getWidth())));
-            svgRoot.setAttributeNS(null, "height",
-                    String.valueOf((int) Math.ceil(bounds.getHeight())));
-
-            ByteArrayOutputStream ostream = new ByteArrayOutputStream();
-            try (Writer writer = new OutputStreamWriter(ostream, StandardCharsets.UTF_8)) {
-                svgGenerator.stream(svgRoot, writer, true, false);
-            }
-
-            Resource res = new Resource();
-            res.setMimeType("image/svg+xml");
-            res.setTitle("Slide " + slideNum);
-            res.setName("slide_" + slideNum + ".svg");
-            res.setData(ostream.toByteArray());
-            res.setSize(res.getData().length);
-            return res;
-        } catch (Exception e) {
-            System.err.println("Slide " + slideNum + " rendering failed: " + e.getMessage());
-            return null;
-        }
-    }
-    
     private Slide convertSlide(XSLFSlide slide, Presentation pres)
     {
         Slide ret = new Slide();
@@ -399,18 +401,18 @@ public final class PPTXLoader
     private String linkPicture(XSLFPictureShape shape)
     {
         XSLFPictureData pData = shape.getPictureData();
-        return "\n![" + shape.getShapeName() + "](assets/" + pData.getFileName() + ")\n";
+        return "\n![" + shape.getShapeName() + "](" + assetsDir + "/" + pData.getFileName() + ")\n";
     }
 
     private String linkPicture(XSLFObjectShape shape)
     {
         XSLFPictureData pData = shape.getPictureData();
-        return "\n![" + shape.getShapeName() + "](assets/" + pData.getFileName() + ")\n";
+        return "\n![" + shape.getShapeName() + "](" + assetsDir + "/" + pData.getFileName() + ")\n";
     }
 
     private String linkPicture(Resource res)
     {
-        return "\n![" + res.getTitle() + "](assets/" + res.getName() + ")\n";
+        return "\n![" + res.getTitle() + "](" + assetsDir + "/" + res.getName() + ")\n";
     }
     
     private Resource createPictureResource(String title, XSLFPictureData data)
@@ -452,7 +454,7 @@ public final class PPTXLoader
     private void indent(int level, StringBuilder ret)
     {
         for (int i = 0; i < level; i++)
-            ret.append(INDENT_STRING);
+            ret.append(indentString);
     }
     
     private String escapeMD(String s)
@@ -477,23 +479,120 @@ public final class PPTXLoader
         return ret;
     }
     
-    
-    public static void main(String args[]) throws IOException, OpenXML4JException {
+    /**
+     * Renders only the graphical shapes of a slide (auto-shapes, connectors, groups containing
+     * such shapes) to SVG using POI's drawing support and Batik's SVGGraphics2D. Title and body
+     * placeholder text shapes are excluded — they are already captured as markdown text.
+     * Shapes are drawn at their natural slide coordinates; the SVG is cropped to their bounding
+     * box via the viewBox attribute so that the title / body area is not included in the image.
+     */
+    private Resource renderGraphicalShapesToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
+    {
+        System.setProperty("java.awt.headless", "true");
+        try {
+            // Collect graphical shapes and compute their bounding box.
+            List<XSLFShape> graphicalShapes = new ArrayList<>();
+            Rectangle2D bounds = null;
+            for (XSLFShape shape : slide)
+            {
+                if (isGraphical(shape))
+                {
+                    graphicalShapes.add(shape);
+                    Rectangle2D anchor = shape.getAnchor();
+                    bounds = (bounds == null) ? anchor : bounds.createUnion(anchor);
+                }
+            }
 
-        PrintStream out = System.out;
+            if (graphicalShapes.isEmpty())
+                return null;
 
-        if (args.length == 0) {
-           out.println("Input file is required");
-           return;
-        }
-        
-        FileInputStream is = new FileInputStream(args[0]);
-        try (XMLSlideShow ppt = new XMLSlideShow(is)) {
-            PPTXLoader loader = new PPTXLoader();
-            //loader.outputMarkdown(ppt, out);
-            Presentation pres = loader.createPresentation(ppt);
-            out.println(pres.toString());
+            var domImpl = GenericDOMImplementation.getDOMImplementation();
+            var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
+            // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
+            SVGGraphics2D svgGenerator = new SVGGraphics2D(document,
+                    new JDKBase64ImageHandler(),
+                    new DefaultExtensionHandler(),
+                    svgTextAsShapes);
+            // Use the full slide canvas so shapes are drawn at their natural slide coordinates.
+            // Rotation centres are therefore computed correctly (no pre-translate to corrupt them).
+            svgGenerator.setSVGCanvasSize(pageSize);
+
+            // Draw only the graphical shapes; title/body placeholder shapes are excluded.
+            // Each shape must be wrapped with explicit AffineTransform save/restore: POI's
+            // DrawFactory.drawShape() (called by shape.draw()) restores the GROUP_TRANSFORM hint
+            // but NOT the Graphics2D AffineTransform, so rotations and flips would otherwise
+            // accumulate across shapes (cf. DrawSheet.draw() which does its own save/restore).
+            for (XSLFShape shape : graphicalShapes)
+            {
+                AffineTransform savedTransform = svgGenerator.getTransform();
+                shape.draw(svgGenerator, null);
+                svgGenerator.setTransform(savedTransform);
+            }
+
+            // Crop the SVG output to the bounding box of the graphical shapes using viewBox,
+            // so the title / body-text area is not visible in the rendered image.
+            var svgRoot = svgGenerator.getRoot();
+            svgRoot.setAttributeNS(null, "viewBox",
+                    bounds.getX() + " " + bounds.getY() + " " +
+                    bounds.getWidth() + " " + bounds.getHeight());
+            svgRoot.setAttributeNS(null, "width",
+                    String.valueOf((int) Math.ceil(bounds.getWidth())));
+            svgRoot.setAttributeNS(null, "height",
+                    String.valueOf((int) Math.ceil(bounds.getHeight())));
+
+            ByteArrayOutputStream ostream = new ByteArrayOutputStream();
+            try (Writer writer = new OutputStreamWriter(ostream, StandardCharsets.UTF_8)) {
+                svgGenerator.stream(svgRoot, writer, true, false);
+            }
+
+            Resource res = new Resource();
+            res.setMimeType("image/svg+xml");
+            res.setTitle("Slide " + slideNum);
+            res.setName("fig_" + slideNum + ".svg");
+            res.setData(ostream.toByteArray());
+            res.setSize(res.getData().length);
+            return res;
+        } catch (Exception e) {
+            System.err.println("Slide " + slideNum + " rendering failed: " + e.getMessage());
+            return null;
         }
     }
+    
+    /**
+     * Renders a full slide to SVG using POI's drawing support and Batik's SVGGraphics2D.
+     */
+    private Resource renderSlideToSVG(XSLFSlide slide, long slideNum, Dimension pageSize)
+    {
+        System.setProperty("java.awt.headless", "true");
+        try {
+            var domImpl = GenericDOMImplementation.getDOMImplementation();
+            var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
+            // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
+            // textAsShapes=true avoids font/headless rendering issues.
+            SVGGraphics2D svgGenerator = new SVGGraphics2D(document,
+                    new JDKBase64ImageHandler(),
+                    new DefaultExtensionHandler(),
+                    true);
+            svgGenerator.setSVGCanvasSize(pageSize);
 
+            slide.draw(svgGenerator);
+
+            ByteArrayOutputStream ostream = new ByteArrayOutputStream();
+            try (Writer writer = new OutputStreamWriter(ostream, StandardCharsets.UTF_8)) {
+                svgGenerator.stream(writer, true);
+            }
+
+            Resource res = new Resource();
+            res.setMimeType("image/svg+xml");
+            res.setTitle("Slide " + slideNum);
+            res.setName("slide_" + slideNum + ".svg");
+            res.setData(ostream.toByteArray());
+            res.setSize(res.getData().length);
+            return res;
+        } catch (Exception e) {
+            System.err.println("Slide " + slideNum + " rendering failed: " + e.getMessage());
+            return null;
+        }
+    }
+    
 }
