@@ -42,8 +42,9 @@ import net.burget.slides.entity.Slide;
  */
 public final class PPTXLoader 
 {
-    private static String INDENT_STRING = "\t";
+    private static final String INDENT_STRING = "    ";
     private static final int MIN_GRAPHICAL_SHAPES = 12;
+    private static final boolean TEXT_AS_SHAPES = false;
 
     private List<ResourceConvertor> resourceConvertors;
     
@@ -185,11 +186,10 @@ public final class PPTXLoader
             var domImpl = GenericDOMImplementation.getDOMImplementation();
             var document = domImpl.createDocument("http://www.w3.org/2000/svg", "svg", null);
             // JDKBase64ImageHandler encodes embedded images via javax.imageio (no Batik SPI needed).
-            // textAsShapes=true avoids font/headless rendering issues.
             SVGGraphics2D svgGenerator = new SVGGraphics2D(document,
                     new JDKBase64ImageHandler(),
                     new DefaultExtensionHandler(),
-                    true);
+                    TEXT_AS_SHAPES);
             // Use the full slide canvas so shapes are drawn at their natural slide coordinates.
             // Rotation centres are therefore computed correctly (no pre-translate to corrupt them).
             svgGenerator.setSVGCanvasSize(pageSize);
