@@ -44,7 +44,7 @@ public final class PPTXLoader
     private String slidesDir = "slides";
     
     private String indentString = "    ";
-    private int minGraphicalShapes = 6;
+    private int minGraphicalShapes = 3;
     private boolean svgTextAsShapes = false;
     private boolean generateSlideImages = true;
 
